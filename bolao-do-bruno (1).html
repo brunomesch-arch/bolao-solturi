@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Bolão do Bruno</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;700;900&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet" />
+
+<!-- ═══════════════════════════════════════════════
+     FIREBASE CONFIG — substitua pelos seus dados
+     Veja o guia de publicação abaixo no HTML
+═══════════════════════════════════════════════ -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import { getDatabase, ref, push, onValue, get } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+  // ┌─────────────────────────────────────────────────┐
+  // │  PASSO 1: Cole aqui suas credenciais do Firebase │
+  // └─────────────────────────────────────────────────┘
+  const firebaseConfig = {
+    apiKey: "AIzaSyCfVYxQhZkxdSngo9TqgF1TjQHPLhYE748",
+    authDomain: "bolao-solturi.firebaseapp.com",
+    databaseURL: "https://bolao-solturi-default-rtdb.firebaseio.com",
+    projectId: "bolao-solturi",
+    storageBucket: "bolao-solturi.firebasestorage.app",
+    messagingSenderId: "731179390589",
+    appId: "1:731179390589:web:5f03668c682f2a354d4314"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db  = getDatabase(app);
+
+  // ┌─────────────────────────────────────────────────┐
+  // │  PASSO 2: Altere os nomes dos times aqui        │
+  // └─────────────────────────────────────────────────┘
+  const TIMES = ["Brasil", "Argentina"];
+  //  Exemplo: const TIMES = ["Flamengo", "Palmeiras"];
+
+  // ┌─────────────────────────────────────────────────┐
+  // │  PASSO 3: Para bloquear novas apostas,          │
+  // │  mude APOSTAS_ABERTAS para false                │
+  // └─────────────────────────────────────────────────┘
+  const APOSTAS_ABERTAS = true;
+
+  // ═══════ NÃO PRECISA ALTERAR ABAIXO ═══════════════
+
+  window.TIMES = TIMES;
+  window.APOSTAS_ABERTAS = APOSTAS_ABERTAS;
+
+  // Preenche selects com os times
+  document.addEventListener("DOMContentLoaded", () => {
+    const selects = document.querySelectorAll(".select-time");
+    selects.forEach(sel => {
+      TIMES.forEach(t => {
+        const opt = document.createElement("option");
+        opt.value = t;
+        opt.textContent = t;
+        sel.appendChild(opt);
+      });
+    });
+
+    // Nomes dos times no placar
+    document.querySelectorAll(".time-a-nome").forEach(el => el.textContent = TIMES[0]);
+    document.querySelectorAll(".time-b-nome").forEach(el => el.textContent = TIMES[1]);
+
+    if (!APOSTAS_ABERTAS) {
+      document.getElementById("formulario").innerHTML = `
+        <div class="aviso-fechado">
+          <span class="icone-lock">🔒</span>
+          <p>As apostas estão encerradas.<br>Boa sorte a todos!</p>
+        </div>`;
+    }
+
+    // Ouve apostas em tempo real
+    const apostasRef = ref(db, "apostas");
+    onValue(apostasRef, (snapshot) => {
+      const dados = snapshot.val() || {};
+      const lista = Object.values(dados);
+      atualizarPlacar(lista);
+      atualizarAdmin(lista);
+    });
+
+    // Envio do formulário
+    document.getElementById("form-aposta")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById("btn-enviar");
+      const nome  = document.getElementById("nome").value.trim();
+      const setor = document.getElementById("setor").value.trim();
+      const time  = document.getElementById("time").value;
+      const gols  = parseInt(document.getElementById("gols").value);
+
+      if (!nome || !setor || !time || isNaN(gols) || gols < 1) return;
+
+      btn.disabled = true;
+      btn.textContent = "Enviando…";
+
+      // Verifica duplicata
+      const snap = await get(ref(db, "apostas"));
+      const existentes = snap.val() || {};
+      const jaApostou = Object.values(existentes).some(
+        a => a.nome.toLowerCase() === nome.toLowerCase()
+      );
+
+      if (jaApostou) {
+        mostrarToast("⚠️ Você já enviou uma aposta!", "erro");
+        btn.disabled = false;
+        btn.textContent = "Enviar aposta";
+        return;
+      }
+
+      await push(ref(db, "apostas"), {
+        nome, setor, time, gols,
+        hora: new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })
+      });
+
+      mostrarToast("✅ Aposta registrada! Boa sorte!", "ok");
+      e.target.reset();
+      btn.disabled = false;
+      btn.textContent = "Enviar aposta";
+      localStorage.setItem("bolao_enviou", "sim");
+    });
+  });
+
+  function atualizarPlacar(lista) {
+    const total = lista.length;
+    document.getElementById("total-apostas").textContent = total;
+
+    const contagem = {};
+    TIMES.forEach(t => contagem[t] = 0);
+    const gols_por_time = {};
+    TIMES.forEach(t => gols_por_time[t] = {});
+
+    lista.forEach(a => {
+      contagem[a.time] = (contagem[a.time] || 0) + 1;
+      if (!gols_por_time[a.time]) gols_por_time[a.time] = {};
+      gols_por_time[a.time][a.gols] = (gols_por_time[a.time][a.gols] || 0) + 1;
+    });
+
+    const barrasEl = document.getElementById("barras-times");
+    barrasEl.innerHTML = "";
+    TIMES.forEach(t => {
+      const pct = total > 0 ? Math.round((contagem[t] / total) * 100) : 0;
+      barrasEl.innerHTML += `
+        <div class="barra-item">
+          <div class="barra-label">
+            <span class="barra-time">${t}</span>
+            <span class="barra-pct">${pct}% <small>(${contagem[t]} apostas)</small></span>
+          </div>
+          <div class="barra-track">
+            <div class="barra-fill" style="width:${pct}%"></div>
+          </div>
+        </div>`;
+    });
+
+    // Distribuição de gols
+    const golsEl = document.getElementById("dist-gols");
+    golsEl.innerHTML = "";
+    TIMES.forEach(t => {
+      const gmap = gols_por_time[t] || {};
+      const entries = Object.entries(gmap).sort((a,b) => a[0]-b[0]);
+      if (!entries.length) return;
+      golsEl.innerHTML += `<div class="dist-time-titulo">${t} vence por:</div>`;
+      entries.forEach(([g, qtd]) => {
+        golsEl.innerHTML += `
+          <div class="dist-row">
+            <span>${g === "1" ? "1 gol" : g + " gols"} de diferença</span>
+            <span class="dist-qtd">${qtd} voto${qtd > 1 ? "s" : ""}</span>
+          </div>`;
+      });
+    });
+    if (!golsEl.innerHTML) golsEl.innerHTML = `<div class="dist-vazio">Ainda sem apostas.</div>`;
+  }
+
+  function atualizarAdmin(lista) {
+    const tbody = document.getElementById("tabela-admin-body");
+    if (!tbody) return;
+    tbody.innerHTML = "";
+    [...lista].reverse().forEach(a => {
+      tbody.innerHTML += `
+        <tr>
+          <td>${a.nome}</td>
+          <td>${a.setor}</td>
+          <td class="td-time">${a.time}</td>
+          <td>${a.gols} gol${a.gols > 1 ? "s" : ""}</td>
+          <td>${a.hora}</td>
+        </tr>`;
+    });
+    document.getElementById("admin-total").textContent = lista.length;
+  }
+
+  function mostrarToast(msg, tipo) {
+    const t = document.getElementById("toast");
+    t.textContent = msg;
+    t.className = "toast show " + (tipo === "erro" ? "toast-erro" : "toast-ok");
+    setTimeout(() => t.className = "toast", 3000);
+  }
+</script>
+
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --verde:    #00C853;
+    --verde-dk: #007E33;
+    --fundo:    #0D0F0E;
+    --card:     #141716;
+    --borda:    #1E2420;
+    --texto:    #F0F0F0;
+    --muted:    #7A8A80;
+    --erro:     #FF3B30;
+    --radius:   14px;
+  }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: "Barlow", sans-serif;
+    background: var(--fundo);
+    color: var(--texto);
+    min-height: 100vh;
+    padding-bottom: 60px;
+  }
+
+  /* ── HERO ───────────────────────────── */
+  .hero {
+    background: linear-gradient(160deg, #0a1a0f 0%, #0D0F0E 60%);
+    padding: 48px 20px 36px;
+    text-align: center;
+    border-bottom: 1px solid var(--borda);
+    position: relative;
+    overflow: hidden;
+  }
+  .hero::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse 70% 60% at 50% 0%, rgba(0,200,83,.13) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .hero-eyebrow {
+    font-family: "Barlow Condensed", sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--verde);
+    margin-bottom: 14px;
+  }
+  .hero-titulo {
+    font-family: "Barlow Condensed", sans-serif;
+    font-size: clamp(56px, 14vw, 88px);
+    font-weight: 900;
+    line-height: .92;
+    letter-spacing: -1px;
+    text-transform: uppercase;
+    color: #fff;
+  }
+  .hero-titulo span { color: var(--verde); }
+  .hero-sub {
+    margin-top: 16px;
+    font-size: 15px;
+    color: var(--muted);
+    max-width: 360px;
+    margin-left: auto;
+    margin-right: auto;
+    line-height: 1.6;
+  }
+  .placar-hero {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 28px;
+    background: rgba(255,255,255,.04);
+    border: 1px solid var(--borda);
+    border-radius: 12px;
+    padding: 12px 20px;
+  }
+  .placar-time {
+    font-family: "Barlow Condensed", sans-serif;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .placar-vs {
+    font-family: "Barlow Condensed", sans-serif;
+    font-size: 26px;
+    font-weight: 900;
+    color: var(--verde);
+  }
+
+  /* ── CONTAINER ──────────────────────── */
+  .container { max-width: 560px; margin: 0 auto; padding: 0 16px; }
+
+  /* ── CARD ───────────────────────────── */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--borda);
+    border-radius: var(--radius);
+    padding: 28px 24px;
+    margin-top: 24px;
+  }
+  .card-titulo {
+    font-family: "Barlow Condensed", sans-serif;
+    font-size: 22px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    color: #fff;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .card-titulo::before {
+    content: "";
+    display: inline-block;
+    width: 4px;
+    height: 22px;
+    background: var(--verde);
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  /* ── FORM ───────────────────────────── */
+  .campo { margin-bottom: 16px; }
+  .campo label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .campo input,
+  .campo select {
+    width: 100%;
+    background: #0D0F0E;
+    border: 1.5px solid var(--borda);
+    border-radius: 10px;
+    color: #fff;
+    font-family: "Barlow", sans-serif;
+    font-size: 16px;
+    padding: 14px 16px;
+    outline: none;
+    appearance: none;
+    transition: border-color .15s;
+  }
+  .campo select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%2300C853' viewBox='0 0 16 16'%3E%3Cpath d='M7.247 11.14 2.451 5.658C1.885 5.013 2.345 4 3.204 4h9.592a1 1 0 0 1 .753 1.659l-4.796 5.48a1 1 0 0 1-1.506 0z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 14px center;
+    padding-right: 40px;
+  }
+  .campo input:focus,
+  .campo select:focus { border-color: var(--verde); }
+  .campo input::placeholder { color: #3A4A40; }
+
+  .btn-enviar {
+    width: 100%;
+    background: var(--verde);
+    color: #000;
+    font-family: "Barlow Condensed", sans-serif;
+    font-size: 20px;
+    font-weight: 900;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    border: none;
+    border-radius: 10px;
+    padding: 18px;
+    cursor: pointer;
+    margin-top: 8px;
+    transition: background .15s, transform .1s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .btn-enviar:hover  { background: #00e060; }
+  .btn-enviar:active { transform: scale(.98); }
+  .btn-enviar:disabled { background: #1E3028; color: #3A4A40; cursor: not-allowed; }
+
+  /* ── PLACAR PÚBLICO ─────────────────── */
+  #total-apostas {
+    font-family: "Barlow Condensed", sans-serif;
+    font-size: 48px;
+    font-weight: 900;
+    color: var(--verde);
+    display: block;
+    text-align: center;
+    margin-bottom: 4px;
+  }
+  .total-label { text-align: center; color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+
+  .barra-item { margin-bottom: 18px; }
+  .barra-label {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 7px;
+  }
+  .barra-time { font-weight: 600; font-size: 15px; }
+  .barra-pct { font-size: 13px; color: var(--muted); }
+  .barra-track {
+    height: 10px;
+    background: #1E2420;
+    border-radius: 99px;
+    overflow: hidden;
+  }
+  .barra-fill {
+    height: 100%;
+    background: var(--verde);
+    border-radius: 99px;
+    transition: width .6s cubic-bezier(.4,0,.2,1);
+  }
+
+  .dist-gols { margin-top: 24px; }
+  .dist-time-titulo {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--verde);
+    margin: 16px 0 8px;
+  }
+  .dist-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 14px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--borda);
+    color: var(--muted);
+  }
+  .dist-qtd { font-weight: 600; color: #fff; }
+  .dist-vazio { font-size: 14px; color: var(--muted); text-align: center; padding: 16px 0; }
+
+  /* ── AVISO FECHADO ──────────────────── */
+  .aviso-fechado {
+    text-align: center;
+    padding: 32px 20px;
+    color: var(--muted);
+    font-size: 16px;
+    line-height: 1.7;
+  }
+  .icone-lock { font-size: 40px; display: block; margin-bottom: 12px; }
+
+  /* ── ADMIN ──────────────────────────── */
+  #admin {
+    display: none;
+    margin-top: 32px;
+    padding: 0 16px;
+    max-width: 960px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  #admin.visivel { display: block; }
+
+  .admin-topo {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .admin-topo h2 {
+    font-family: "Barlow Condensed", sans-serif;
+    font-size: 20px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #fff;
+  }
+  .admin-badge {
+    background: var(--verde);
+    color: #000;
+    font-family: "Barlow Condensed", sans-serif;
+    font-size: 14px;
+    font-weight: 700;
+    padding: 4px 12px;
+    border-radius: 99px;
+  }
+
+  .tabela-wrap { overflow-x: auto; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--borda);
+    white-space: nowrap;
+  }
+  td {
+    padding: 12px;
+    border-bottom: 1px solid var(--borda);
+    color: #ccc;
+  }
+  td.td-time { color: var(--verde); font-weight: 600; }
+  tr:hover td { background: #141716; }
+
+  /* ── BOTÃO ADMIN ────────────────────── */
+  .btn-admin-acesso {
+    display: block;
+    text-align: center;
+    margin: 32px auto 0;
+    background: none;
+    border: 1px solid var(--borda);
+    color: var(--muted);
+    font-size: 13px;
+    padding: 10px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-family: "Barlow", sans-serif;
+    transition: border-color .15s;
+  }
+  .btn-admin-acesso:hover { border-color: var(--verde); color: var(--verde); }
+
+  /* ── TOAST ──────────────────────────── */
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(80px);
+    opacity: 0;
+    background: #1E2420;
+    color: #fff;
+    font-size: 15px;
+    font-weight: 500;
+    padding: 14px 24px;
+    border-radius: 12px;
+    border: 1px solid var(--borda);
+    white-space: nowrap;
+    transition: transform .3s, opacity .3s;
+    z-index: 999;
+    pointer-events: none;
+  }
+  .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+  .toast.toast-ok   { border-color: var(--verde); }
+  .toast.toast-erro { border-color: var(--erro); }
+
+  /* ── RODAPÉ ─────────────────────────── */
+  footer {
+    text-align: center;
+    padding: 40px 20px 20px;
+    color: #2A3830;
+    font-size: 12px;
+  }
+
+  @media (max-width: 420px) {
+    .card { padding: 20px 16px; }
+    .hero { padding: 36px 16px 28px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ══ HERO ══════════════════════════════════════ -->
+<header class="hero">
+  <p class="hero-eyebrow">⚽ Aposta interna · Solturi Energia Solar</p>
+  <h1 class="hero-titulo">Bolão<br>do <span>Bruno</span></h1>
+  <p class="hero-sub">Escolha o time vencedor e o placar de diferença. Quem acertar leva um prêmio do Bruno.</p>
+  <div class="placar-hero">
+    <span class="placar-time time-a-nome">Time A</span>
+    <span class="placar-vs">VS</span>
+    <span class="placar-time time-b-nome">Time B</span>
+  </div>
+</header>
+
+<!-- ══ FORMULÁRIO ════════════════════════════════ -->
+<div class="container">
+  <div class="card">
+    <div class="card-titulo">Faça sua aposta</div>
+
+    <div id="formulario">
+      <form id="form-aposta" autocomplete="off">
+        <div class="campo">
+          <label for="nome">Nome completo</label>
+          <input type="text" id="nome" placeholder="Seu nome" required />
+        </div>
+        <div class="campo">
+          <label for="setor">Setor ou equipe</label>
+          <input type="text" id="setor" placeholder="Ex: Comercial, Operações…" required />
+        </div>
+        <div class="campo">
+          <label for="time">Time que vai ganhar</label>
+          <select id="time" class="select-time" required>
+            <option value="">Escolha o time…</option>
+          </select>
+        </div>
+        <div class="campo">
+          <label for="gols">Gols de diferença na vitória</label>
+          <input type="number" id="gols" min="1" max="20" placeholder="Ex: 2" required />
+        </div>
+        <button type="submit" class="btn-enviar" id="btn-enviar">Enviar aposta</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ══ PLACAR PÚBLICO ════════════════════════ -->
+  <div class="card">
+    <div class="card-titulo">Votação em tempo real</div>
+    <span id="total-apostas">0</span>
+    <p class="total-label">apostas registradas</p>
+    <div id="barras-times"></div>
+    <div id="dist-gols" class="dist-gols"></div>
+  </div>
+</div>
+
+<!-- ══ BOTÃO ADMIN ════════════════════════════ -->
+<button class="btn-admin-acesso" onclick="abrirAdmin()">Área do administrador</button>
+
+<!-- ══ ADMIN ══════════════════════════════════ -->
+<div id="admin">
+  <div class="admin-topo">
+    <h2>🔐 Todas as apostas</h2>
+    <span class="admin-badge">Total: <span id="admin-total">0</span></span>
+  </div>
+  <div class="tabela-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Nome</th>
+          <th>Setor</th>
+          <th>Time</th>
+          <th>Gols dif.</th>
+          <th>Horário</th>
+        </tr>
+      </thead>
+      <tbody id="tabela-admin-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<footer>Bolão do Bruno · Solturi Energia Solar · Jaraguá do Sul, SC</footer>
+
+<div id="toast" class="toast"></div>
+
+<script>
+  function abrirAdmin() {
+    const senha = prompt("Senha do administrador:");
+    if (senha === "solturi2024") {
+      document.getElementById("admin").classList.add("visivel");
+      document.querySelector(".btn-admin-acesso").style.display = "none";
+      document.getElementById("admin").scrollIntoView({ behavior: "smooth" });
+    } else if (senha !== null) {
+      alert("Senha incorreta.");
+    }
+  }
+</script>
+
+</body>
+</html>
